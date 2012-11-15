@@ -20,28 +20,30 @@ class Firewall (object):
     """
         #flush counts file
     #read input files
-    ports = open('root/pox/ext/banned-domains.txt', 'r')
-    domains = open('root/pox/ext/banned-ports.txt', 'r')
-    strings = open('root/pox/ext/monitored-strings.txt', 'r')
+    ports = open('/root/pox/ext/banned-ports.txt', 'r')
+    domains = open('/root/pox/ext/banned-domains.txt', 'r')
+    strings = open('/root/pox/ext/monitored-strings.txt', 'r')
     
-    self.ports = []
-    self.domains = []
-    self.strings = {}
+    self.banned_ports = []
+    self.banned_domains = []
+    self.monitor_strings = {}
     
     for line in ports:
-        self.ports.append(line)
+        self.banned_ports.append(int(line))
     for line in domains:
-        self.domains.append(line)
+        # TODO: what?
+        self.banned_domains.append(line)
     for line in strings:
         line = line.split(':')
-        self.strings[line[0]] = line[1]
+        self.monitor_strings[line[0]] = line[1]
         
     ports.close()
     domains.close()
     strings.close()
     
-    self.counts = open('root/pox/ext/counts.csv', 'w')
-    self.counts.flush()
+    # Don't write a blank file yet
+    #self.counts = open('/root/pox/ext/counts.csv', 'w')
+    #self.counts.flush()
     log.debug("Firewall initialized.")
 
   def _handle_ConnectionIn (self, event, flow, packet):
@@ -50,17 +52,28 @@ class Firewall (object):
     You can alter what happens with the connection by altering the
     action property of the event.
     """
-    if(packet.payload.payload.dstport in self.ports):
-        event.action.deny = True
-    elif(False):
-        #Case 2.  Blocked domain
-        pass
-    elif(False):
-        #Case 3.  Monitored string
-        pass
+    
+    # Banned port?
+    if flow.dstport in self.banned_ports:
+        log.debug("DENIED (banned port) connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
+        event.action.deny = True 
+        return
+    
+    # Defer connection?
+    if self.banned_domains:
+        log.debug("DEFERRED connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
+        event.action.defer = True
     else:
-        log.debug("Allowed connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
         event.action.forward = True
+        log.debug("Allowed connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
+    
+    # Mark to monitor data?
+    if flow.src in self.monitor_strings.keys() :
+        event.action.monitor_forward = True
+    
+    if flow.dst in self.monitor_strings.keys() :
+        event.action.monitor_backward = True
+    # What about the case self to self?
 
   def _handle_DeferredConnectionIn (self, event, flow, packet):
     """
@@ -69,6 +82,7 @@ class Firewall (object):
     handler will be called when the first actual payload data
     comes across the connection.
     """
+    log.debug("Payload: " + packet.payload.payload.payload)
     pass
     
   def _handle_MonitorData (self, event, packet, reverse):
