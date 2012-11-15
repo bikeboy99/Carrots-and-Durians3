@@ -18,6 +18,30 @@ class Firewall (object):
     Constructor.
     Put your initialization code here.
     """
+        #flush counts file
+    #read input files
+    ports = open('root/pox/ext/banned-domains.txt', 'r')
+    domains = open('root/pox/ext/banned-ports.txt', 'r')
+    strings = open('root/pox/ext/monitored-strings.txt', 'r')
+    
+    self.ports = []
+    self.domains = []
+    self.strings = {}
+    
+    for line in ports:
+        self.ports.append(line)
+    for line in domains:
+        self.domains.append(line)
+    for line in strings:
+        line = line.split(':')
+        self.strings[line[0]] = line[1]
+        
+    ports.close()
+    domains.close()
+    strings.close()
+    
+    self.counts = open('root/pox/ext/counts.csv', 'w')
+    self.counts.flush()
     log.debug("Firewall initialized.")
 
   def _handle_ConnectionIn (self, event, flow, packet):
@@ -39,6 +63,7 @@ class Firewall (object):
     pass
     
   def _handle_MonitorData (self, event, packet, reverse):
+      #packet.payload.payload.payload
     """
     Monitoring event handler.
     Called when data passes over the connection if monitoring
