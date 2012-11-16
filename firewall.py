@@ -1,6 +1,7 @@
 from pox.core import core
 from pox.lib.addresses import * 
 from pox.lib.packet import *
+from pox.lib.recoco.recoco import *
 import re
 
 # Get a logger
@@ -55,7 +56,7 @@ class Firewall (object):
     self.length = 0
     for line in strings:
         line = line.strip()
-        if len(line) > max:
+        if len(line) > self.length:
             self.length = len(line)
         line = line.split(':')
         try:
@@ -193,19 +194,22 @@ class Firewall (object):
             snippet = self.monitored_data[IPStr].outBuff
         
         #Loop through each string we are looking for
+        size = len(data)
+        combination = snippet + data
+        combosize = size + len(snippet)
+        
         for searchString in self.monitor_strings[monitoredIP]:
             #count the number of times the string appears, minus the times it appears in old buffer alone
-            counts = len(re.findall(searchString, data + snippet)) - len(re.findall(searchString, snippet))
+            counts = len(re.findall(searchString, combination)) - len(re.findall(searchString, snippet))
             self.counts[IPStr + ',' + searchString] = self.counts[IPStr + ',' + searchString] + counts;
     
         #Now set up the next buffer
-        size = len(data)
         #packet is bigger than largest search word
-        if(size > self.length):
-            snippet = data[size-self.length:size]
-        #search word is bigger than packet
+        if(combosize > self.length):
+            snippet = combination[combosize-self.length:combosize]
+        #search word is bigger than packet + buffer
         else:
-            snippet = snippet[min(size, len(self.snippet)):len(snippet)] + data
+            snippet = combination
         
         #overwrite old buffer with new one  
         if reverse:
