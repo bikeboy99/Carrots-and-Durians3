@@ -1,6 +1,7 @@
 from pox.core import core
 from pox.lib.addresses import * 
 from pox.lib.packet import *
+import re
 
 # Get a logger
 log = core.getLogger("fw")
@@ -30,11 +31,12 @@ class Firewall (object):
     
     for line in ports:
         self.banned_ports.append(int(line))
+        
     for line in domains:
-        # TODO: what?
-        self.banned_domains.append(line)
+        self.banned_domains.append(line.strip())
+        
     for line in strings:
-        line = line.split(':')
+        line = line.strip().split(':')
         self.monitor_strings[line[0]] = line[1]
         
     ports.close()
@@ -61,7 +63,7 @@ class Firewall (object):
     
     # Defer connection?
     if self.banned_domains:
-        log.debug("DEFERRED connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
+        #log.debug("DEFERRED connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
         event.action.defer = True
     else:
         event.action.forward = True
@@ -82,9 +84,35 @@ class Firewall (object):
     handler will be called when the first actual payload data
     comes across the connection.
     """
+    log.debug("HANDLING DEFERRED CONNECTION: [" +  str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]")
     log.debug("Payload: " + packet.payload.payload.payload)
-    pass
+    payload = packet.payload.payload.payload
     
+    # No need to worry about empty payload.  
+    # Parse the payload for domain check
+    
+    host = "WHAT THE FUDGE"
+    for line in payload.splitlines():
+        if line.split(" ")[0] == "Host:":
+            host = line.split(" ")[1]
+    log.debug("HOST: " + host)
+    
+    for banned_domain in self.banned_domains:
+        domain = banned_domain.replace(".", "\.")
+        domain_regex = "^" + domain + "$" + "|" + "\." + domain + "$"
+        log.debug("domain_regex: " + domain_regex)
+        if re.search(domain_regex, host):
+            event.action.forward = False
+            log.debug("BOOM SHAKLA")
+            log.debug("DROPPED " + host + " with regex: " + domain_regex)
+            log.debug("BOOM")
+            return
+        
+    # At this point, no reason to drop it.
+    event.action.forward = True
+    
+    
+  
   def _handle_MonitorData (self, event, packet, reverse):
       #packet.payload.payload.payload
     """
