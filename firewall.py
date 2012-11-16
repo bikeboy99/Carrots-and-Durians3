@@ -100,6 +100,8 @@ class Firewall (object):
     for banned_domain in self.banned_domains:
         domain = banned_domain.replace(".", "\.")
         domain_regex = "^" + domain + "$" + "|" + "\." + domain + "$"
+        port_regex = "^" + domain + ":[0-9]{1,5}$" + "|" + "\." + domain + ":[0-9]{1,5}$"
+        domain_regex = domain_regex + port_regex   
         log.debug("domain_regex: " + domain_regex)
         if re.search(domain_regex, host):
             event.action.forward = False
@@ -110,7 +112,6 @@ class Firewall (object):
         
     # At this point, no reason to drop it.
     event.action.forward = True
-    
     
   
   def _handle_MonitorData (self, event, packet, reverse):
