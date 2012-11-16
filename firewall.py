@@ -86,6 +86,15 @@ class Firewall (object):
         event.action.deny = True 
         return
     
+    # Defer connection?
+    #TODO: handle monitor/deferred case!!
+    if self.banned_domains:
+        #log.debug("DEFERRED connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
+        event.action.defer = True
+    else:
+        event.action.forward = True
+        log.debug("Allowed connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
+        
     # Mark to monitor data
     #TODO: should this be before the forward action?
     monitoredIPs = self.monitor_strings.keys()
@@ -122,15 +131,7 @@ class Firewall (object):
         event.action.monitor_forward = True
         event.action.monitor_backward = True
     
-    # Defer connection?
-    #TODO: handle monitor/deferred case!!
-    if self.banned_domains:
-        #only defer http connections?
-        #log.debug("DEFERRED connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
-        event.action.defer = True
-    else:
-        event.action.forward = True
-        log.debug("Allowed connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
+    
     
   def _handle_DeferredConnectionIn (self, event, flow, packet):
     """
@@ -152,21 +153,28 @@ class Firewall (object):
             host = line.split(" ")[1]
     #log.debug("HOST: " + host)
     
+    denied = False
     for banned_domain in self.banned_domains:
         domain = banned_domain.replace(".", "\.")
         domain_regex = "^" + domain + "$" + "|" + "\." + domain + "$"
         port_regex = "^" + domain + ":[0-9]{1,5}$" + "|" + "\." + domain + ":[0-9]{1,5}$"
-        domain_regex = domain_regex + port_regex   
+        domain_regex = domain_regex + "|" + port_regex   
         #log.debug("domain_regex: " + domain_regex)
-        if re.search(domain_regex, host):
-            event.action.forward = False
-            log.debug("BOOM SHAKLA")
-            log.debug("DROPPED " + host + " with regex: " + domain_regex)
-            log.debug("BOOM")
-            return
+        denied = re.search(domain_regex, host) or denied
         
-    # At this point, no reason to drop it.
-    event.action.forward = True
+    if denied:
+        event.action.deny = True
+        log.debug("BOOM SHAKLA")
+        log.debug("DROPPED " + host)
+        log.debug("BOOM")
+    else:
+        # At this point, no reason to drop it.
+        event.action.forward = True
+        if flow.dst in self.monitor_strings.keys() :
+            event.action.monitor_forward = True
+            event.action.monitor_backward = True    
+        
+    
     
   def _handle_MonitorData (self, event, packet, reverse):
     tcp = packet.payload.payload
