@@ -86,26 +86,18 @@ class Firewall (object):
         event.action.deny = True 
         return
     
-    # Defer connection?
-    #TODO: handle monitor/deferred case!!
-    #is this line below right?
-    if self.banned_domains:
-        #log.debug("DEFERRED connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
-        event.action.defer = True
-    else:
-        event.action.forward = True
-        log.debug("Allowed connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
-    
     # Mark to monitor data
     #TODO: should this be before the forward action?
     monitoredIPs = self.monitor_strings.keys()
-    if flow.src in monitoredIPs or flow.dst in monitoredIPs:
-        if flow.src in self.monitor_strings.keys() :
-            IPStr = flow.src + ',' + flow.srcport + ',' + flow.dst + ',' + flow.dstport
-            monitoredIP = flow.src
-        elif flow.dst in self.monitor_strings.keys() :
-            IPStr = flow.dst + ',' + flow.dstport + ',' + flow.src + ',' + flow.srcport
-            monitoredIP = flow.dst
+    log.debug("Flow source: " + flow.src.toStr() + " Flow dest: " + flow.dst.toStr())
+    log.debug("Monitored IPs: " + ",".join(monitoredIPs))
+    if flow.src.toStr() in monitoredIPs or flow.dst.toStr() in monitoredIPs:
+        if flow.src.toStr() in monitoredIPs :
+            IPStr = flow.src.toStr() + ',' + str(flow.srcport) + ',' + flow.dst.toStr() + ',' + str(flow.dstport)
+            monitoredIP = flow.src.toStr()
+        elif flow.dst.toStr() in monitoredIPs:
+            IPStr = flow.dst.toStr() + ',' + str(flow.dstport) + ',' + flow.src.toStr() + ',' + str(flow.srcport)
+            monitoredIP = flow.dst.toStr()
         
         log.debug("Monitoring connection: " + IPStr)
         #Same conneciton already exists!
@@ -115,7 +107,7 @@ class Firewall (object):
             for string in self.monitor_strings[monitoredIP]:
                 #TODO: get rid of old connection somehow??
                 IPStr = IPStr.split(",")
-                self.countsFile.write(IPStr[0] + ',' + IPStr[1] + string + ',' + self.counts[IPStr])
+                self.countsFile.write(IPStr[0] + ',' + IPStr[1] + ',' +string + ',' + str(self.counts[IPStr + "," + string]) + "\n")
         else:
             self.monitored_connections.add(IPStr)
         #new tuple to hold data snippets and timer
@@ -129,7 +121,17 @@ class Firewall (object):
         #monitor this connection in both directions
         event.action.monitor_forward = True
         event.action.monitor_backward = True
-        
+    
+    # Defer connection?
+    #TODO: handle monitor/deferred case!!
+    if self.banned_domains:
+        #only defer http connections?
+        #log.debug("DEFERRED connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
+        event.action.defer = True
+    else:
+        event.action.forward = True
+        log.debug("Allowed connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
+    
   def _handle_DeferredConnectionIn (self, event, flow, packet):
     """
     Deferred connection event handler.
@@ -138,7 +140,7 @@ class Firewall (object):
     comes across the connection.
     """
     log.debug("HANDLING DEFERRED CONNECTION: [" +  str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]")
-    log.debug("Payload: " + packet.payload.payload.payload)
+    #log.debug("Payload: " + packet.payload.payload.payload)
     payload = packet.payload.payload.payload
     
     # No need to worry about empty payload.  
@@ -148,14 +150,14 @@ class Firewall (object):
     for line in payload.splitlines():
         if line.split(" ")[0] == "Host:":
             host = line.split(" ")[1]
-    log.debug("HOST: " + host)
+    #log.debug("HOST: " + host)
     
     for banned_domain in self.banned_domains:
         domain = banned_domain.replace(".", "\.")
         domain_regex = "^" + domain + "$" + "|" + "\." + domain + "$"
         port_regex = "^" + domain + ":[0-9]{1,5}$" + "|" + "\." + domain + ":[0-9]{1,5}$"
         domain_regex = domain_regex + port_regex   
-        log.debug("domain_regex: " + domain_regex)
+        #log.debug("domain_regex: " + domain_regex)
         if re.search(domain_regex, host):
             event.action.forward = False
             log.debug("BOOM SHAKLA")
@@ -185,6 +187,8 @@ class Firewall (object):
         timer = self.monitored_data[IPStr].timer
         if timer != None:
             timer.cancel
+        #must do the deletion of timer manually    
+        del(self.monitored_data[IPStr].timer)
         self.monitored_data[IPStr].timer = Timer(TIMEOUT, self.handle_timeout, (IP, IPStr))
         
         #retrieve buffer for this particular connection and direction
@@ -227,8 +231,9 @@ class Firewall (object):
     self.monitored_connections.remove(IPStr)
     for string in self.monitor_strings[ip]:
         IPStr = IPStr.split(",")
-        self.countsFile.write(IPStr[0] + ',' + IPStr[1] + string + ',' + self.counts[IPStr])
+        self.countsFile.write(IPStr[0] + ',' + IPStr[1] + ',' + string + ',' + str(self.counts[IPStr+string]))
         del(self.counts[IPStr + ',' + string])
+    del(self.monitored_data[IPStr].timer)
     del(self.monitored_data[IPStr])
         
 class monitor_tuple:
