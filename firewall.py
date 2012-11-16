@@ -14,6 +14,8 @@ class Firewall (object):
   expects it to be firewall.Firewall.
   """
   
+  TIMEOUT = 30
+  
   def __init__(self):
     """
     Constructor.
@@ -25,27 +27,49 @@ class Firewall (object):
     domains = open('/root/pox/ext/banned-domains.txt', 'r')
     strings = open('/root/pox/ext/monitored-strings.txt', 'r')
     
-    self.banned_ports = []
-    self.banned_domains = []
+    self.banned_ports = set([])
+    self.banned_domains = set([])
     self.monitor_strings = {}
     
+    #dictionary to hold all the monitoring data for the connections
+    #K: csv of: ext.IP, external port, internal IP, internal port
+    #V: list that holds:
+    #    0: input data snippet
+    #    1: output data snippet
+    #    2: Timer
+    self.monitored_data = {}
+    
+    #dictionary that holds 
+    #K: csv of: ext.IP, external port, internal IP, internal port, search string
+    #V: counts
+    self.counts = {}
+    
+    #set that contains valid connections as csv of ext.IP, external port, 
+    #internal ip, internal port
+    self.monitored_connections = set([])
+    
     for line in ports:
-        self.banned_ports.append(int(line))
-        
+        self.banned_ports.add(int(line))
     for line in domains:
-        self.banned_domains.append(line.strip())
-        
+        self.banned_domains.add(line.strip())
+    self.length = 0
     for line in strings:
-        line = line.strip().split(':')
-        self.monitor_strings[line[0]] = line[1]
+        line = line.strip()
+        if len(line) > max:
+            self.length = len(line)
+        line = line.split(':')
+        try:
+            self.monitor_strings[line[0].strip()].append(line[1].strip())
+        except KeyError:
+            self.monitor_strings[line[0].strip()] = []
+            self.monitor_strings[line[0].strip()].append(line[1].strip())
         
     ports.close()
     domains.close()
     strings.close()
     
-    # Don't write a blank file yet
-    #self.counts = open('/root/pox/ext/counts.csv', 'w')
-    #self.counts.flush()
+    self.countsFile = open('/root/pox/ext/counts.csv', 'w')
+    self.countsFile.flush()
     log.debug("Firewall initialized.")
 
   def _handle_ConnectionIn (self, event, flow, packet):
@@ -62,6 +86,8 @@ class Firewall (object):
         return
     
     # Defer connection?
+    #TODO: handle monitor/deferred case!!
+    #is this line below right?
     if self.banned_domains:
         #log.debug("DEFERRED connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
         event.action.defer = True
@@ -69,14 +95,40 @@ class Firewall (object):
         event.action.forward = True
         log.debug("Allowed connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
     
-    # Mark to monitor data?
-    if flow.src in self.monitor_strings.keys() :
+    # Mark to monitor data
+    #TODO: should this be before the forward action?
+    monitoredIPs = self.monitor_strings.keys()
+    if flow.src in monitoredIPs or flow.dst in monitoredIPs:
+        if flow.src in self.monitor_strings.keys() :
+            IPStr = flow.src + ',' + flow.srcport + ',' + flow.dst + ',' + flow.dstport
+            monitoredIP = flow.src
+        elif flow.dst in self.monitor_strings.keys() :
+            IPStr = flow.dst + ',' + flow.dstport + ',' + flow.src + ',' + flow.srcport
+            monitoredIP = flow.dst
+        
+        log.debug("Monitoring connection: " + IPStr)
+        #Same conneciton already exists!
+        if IPStr in self.monitored_connections:
+            log.debug("Old connection still exists.  Writing counts to file.")
+            #output counts to countsFile
+            for string in self.monitor_strings[monitoredIP]:
+                #TODO: get rid of old connection somehow??
+                IPStr = IPStr.split(",")
+                self.countsFile.write(IPStr[0] + ',' + IPStr[1] + string + ',' + self.counts[IPStr])
+        else:
+            self.monitored_connections.add(IPStr)
+        #new tuple to hold data snippets and timer
+        data = monitor_tuple(IP, IPStr)
+        self.monitored_data[IPStr] = data
+        
+        #set up blank counts for each string
+        for string in self.monitor_strings[monitoredIP]:
+            self.counts[IPStr + ',' + string] = 0
+        
+        #monitor this connection in both directions
         event.action.monitor_forward = True
-    
-    if flow.dst in self.monitor_strings.keys() :
         event.action.monitor_backward = True
-    # What about the case self to self?
-
+        
   def _handle_DeferredConnectionIn (self, event, flow, packet):
     """
     Deferred connection event handler.
@@ -113,12 +165,71 @@ class Firewall (object):
     # At this point, no reason to drop it.
     event.action.forward = True
     
-  
   def _handle_MonitorData (self, event, packet, reverse):
-      #packet.payload.payload.payload
-    """
-    Monitoring event handler.
-    Called when data passes over the connection if monitoring
-    has been enabled by a prior event handler.
-    """
-    pass
+    tcp = packet.payload.payload
+    #is this a string?
+    data = tcp.payload
+    monitoredIPs = self.monitor_strings.keys()
+    
+    if(tcp.dstip.toStr() in monitoredIPs):
+        IPStr = tcp.dstip.toStr() + ',' + tcp.dstport.toStr() + ',' + tcp.srcip.toStr() + ',' + tcp.srcport.toStr()
+        monitoredIP = tcp.dstip.toStr()
+    elif(tcp.srcip.toStr() in monitoredIPs):
+        IPStr = tcp.srcip.toStr() + ',' + tcp.srcport.toStr() + ',' + tcp.dstip.toStr() + ',' + tcp.dstport.toStr()
+        monitoredIP = tcp.srcip.toStr();
+    
+    #if: still in monitored connections, do:
+    if IPStr in self.monitored_connections:
+        #reset timer
+        timer = self.monitored_data[IPStr].timer
+        if timer != None:
+            timer.cancel
+        self.monitored_data[IPStr].timer = Timer(TIMEOUT, self.handle_timeout, (IP, IPStr))
+        
+        #retrieve buffer for this particular connection and direction
+        if reverse:
+            snippet = self.monitored_data[IPStr].inBuff
+        else:
+            snippet = self.monitored_data[IPStr].outBuff
+        
+        #Loop through each string we are looking for
+        for searchString in self.monitor_strings[monitoredIP]:
+            #count the number of times the string appears, minus the times it appears in old buffer alone
+            counts = len(re.findall(searchString, data + snippet)) - len(re.findall(searchString, snippet))
+            self.counts[IPStr + ',' + searchString] = self.counts[IPStr + ',' + searchString] + counts;
+    
+        #Now set up the next buffer
+        size = len(data)
+        #packet is bigger than largest search word
+        if(size > self.length):
+            snippet = data[size-self.length:size]
+        #search word is bigger than packet
+        else:
+            snippet = snippet[min(size, len(self.snippet)):len(snippet)] + data
+        
+        #overwrite old buffer with new one  
+        if reverse:
+            self.monitored_data[IPStr].inBuff = snippet
+        else:
+            self.monitored_data[IPStr].outBuff = snippet
+    else:
+        log.debug("WARNING: Tried to monitor connection that isn't in internal set")
+
+  def handle_timeout(self, tup):
+    #output count data
+    #remove connection from monitoring
+    log.debug("Connection timeout: " + IPStr)
+    ip, IPStr = tup
+    self.monitored_connections.remove(IPStr)
+    for string in self.monitor_strings[ip]:
+        IPStr = IPStr.split(",")
+        self.countsFile.write(IPStr[0] + ',' + IPStr[1] + string + ',' + self.counts[IPStr])
+        del(self.counts[IPStr + ',' + string])
+    del(self.monitored_data[IPStr])
+        
+class monitor_tuple:
+    def __init__(self, IP, IPStr):
+        self.inBuff = ""
+        self.outBuff = ""
+        self.timer = Timer(TIMEOUT, self.handle_timeout, (IP, IPStr))
+        
