@@ -45,14 +45,14 @@ class Firewall (object):
     #V: counts
     self.counts = {}
     
-    #set that contains valid connections as csv of ext.IP, external port, 
-    #internal ip, internal port
+    #set that contains valid connections as csv of ext.IP, external port, internal ip, internal port
     self.monitored_connections = set([])
     
     for line in ports:
         self.banned_ports.add(int(line))
     for line in domains:
         self.banned_domains.add(line.strip())
+        
     self.length = 0
     for line in strings:
         line = line.strip()
@@ -69,8 +69,10 @@ class Firewall (object):
     domains.close()
     strings.close()
     
+    # You need to write to file EACH TIME MONITORED CONNECTION CLOSES(read spec)
+    # Use open('/root/pox/ext/counts.csv', 'a') for APPENDING.  
     self.countsFile = open('/root/pox/ext/counts.csv', 'w')
-    self.countsFile.flush()
+    self.countsFile.close()
     log.debug("Firewall initialized.")
 
   def _handle_ConnectionIn (self, event, flow, packet):
