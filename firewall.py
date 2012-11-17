@@ -45,14 +45,14 @@ class Firewall (object):
     #V: counts
     self.counts = {}
     
-    #set that contains valid connections as csv of ext.IP, external port, 
-    #internal ip, internal port
+    #set that contains valid connections as csv of ext.IP, external port, internal ip, internal port
     self.monitored_connections = set([])
     
     for line in ports:
         self.banned_ports.add(int(line))
     for line in domains:
         self.banned_domains.add(line.strip())
+        
     self.length = 0
     for line in strings:
         line = line.strip()
@@ -69,8 +69,11 @@ class Firewall (object):
     domains.close()
     strings.close()
     
+    # You need to write to file EACH TIME MONITORED CONNECTION CLOSES(read spec)
+    # Use open('/root/pox/ext/counts.csv', 'a') for APPENDING.  
     self.countsFile = open('/root/pox/ext/counts.csv', 'w')
     self.countsFile.flush()
+    self.countsFile.close()
     log.debug("Firewall initialized.")
 
   def _handle_ConnectionIn (self, event, flow, packet):
@@ -92,46 +95,12 @@ class Firewall (object):
         #log.debug("DEFERRED connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
         event.action.defer = True
     else:
+        #mark for monitoring if applicable
+        self.mark_monitored(event, flow)
+        
         event.action.forward = True
         log.debug("Allowed connection [" + str(flow.src) + ":" + str(flow.srcport) + "," + str(flow.dst) + ":" + str(flow.dstport) + "]" )
-        
-    # Mark to monitor data
-    #TODO: should this be before the forward action?
-    monitoredIPs = self.monitor_strings.keys()
-    log.debug("Flow source: " + flow.src.toStr() + " Flow dest: " + flow.dst.toStr())
-    log.debug("Monitored IPs: " + ",".join(monitoredIPs))
-    if flow.src.toStr() in monitoredIPs or flow.dst.toStr() in monitoredIPs:
-        if flow.src.toStr() in monitoredIPs :
-            IPStr = flow.src.toStr() + ',' + str(flow.srcport) + ',' + flow.dst.toStr() + ',' + str(flow.dstport)
-            monitoredIP = flow.src.toStr()
-        elif flow.dst.toStr() in monitoredIPs:
-            IPStr = flow.dst.toStr() + ',' + str(flow.dstport) + ',' + flow.src.toStr() + ',' + str(flow.srcport)
-            monitoredIP = flow.dst.toStr()
-        
-        log.debug("Monitoring connection: " + IPStr)
-        #Same conneciton already exists!
-        if IPStr in self.monitored_connections:
-            log.debug("Old connection still exists.  Writing counts to file.")
-            #output counts to countsFile
-            for string in self.monitor_strings[monitoredIP]:
-                #TODO: get rid of old connection somehow??
-                IPStr = IPStr.split(",")
-                self.countsFile.write(IPStr[0] + ',' + IPStr[1] + ',' +string + ',' + str(self.counts[IPStr + "," + string]) + "\n")
-        else:
-            self.monitored_connections.add(IPStr)
-        #new tuple to hold data snippets and timer
-        data = monitor_tuple(IP, IPStr)
-        self.monitored_data[IPStr] = data
-        
-        #set up blank counts for each string
-        for string in self.monitor_strings[monitoredIP]:
-            self.counts[IPStr + ',' + string] = 0
-        
-        #monitor this connection in both directions
-        event.action.monitor_forward = True
-        event.action.monitor_backward = True
-    
-    
+
     
   def _handle_DeferredConnectionIn (self, event, flow, packet):
     """
@@ -169,6 +138,10 @@ class Firewall (object):
         log.debug("BOOM")
     else:
         # At this point, no reason to drop it.
+        
+        #mark for monitoring if applicable
+        self.mark_monitored(event, flow)
+        
         event.action.forward = True
         if flow.dst in self.monitor_strings.keys() :
             event.action.monitor_forward = True
@@ -177,27 +150,28 @@ class Firewall (object):
     
     
   def _handle_MonitorData (self, event, packet, reverse):
-    tcp = packet.payload.payload
-    #is this a string?
+    ip = packet.payload
+    tcp = ip.payload
+    #is this a string? call payload again?
     data = tcp.payload
     monitoredIPs = self.monitor_strings.keys()
     
-    if(tcp.dstip.toStr() in monitoredIPs):
-        IPStr = tcp.dstip.toStr() + ',' + tcp.dstport.toStr() + ',' + tcp.srcip.toStr() + ',' + tcp.srcport.toStr()
-        monitoredIP = tcp.dstip.toStr()
-    elif(tcp.srcip.toStr() in monitoredIPs):
-        IPStr = tcp.srcip.toStr() + ',' + tcp.srcport.toStr() + ',' + tcp.dstip.toStr() + ',' + tcp.dstport.toStr()
-        monitoredIP = tcp.srcip.toStr();
+    if(ip.dstip.toStr() in monitoredIPs):
+        IPStr = ip.dstip.toStr() + ',' + str(tcp.dstport) + ',' + ip.srcip.toStr() + ',' + str(tcp.srcport)
+        monitoredIP = ip.dstip.toStr()
+    elif(ip.srcip.toStr() in monitoredIPs):
+        IPStr = ip.srcip.toStr() + ',' + str(tcp.srcport) + ',' + ip.dstip.toStr() + ',' + str(tcp.dstport)
+        monitoredIP = ip.srcip.toStr();
     
     #if: still in monitored connections, do:
     if IPStr in self.monitored_connections:
         #reset timer
         timer = self.monitored_data[IPStr].timer
         if timer != None:
-            timer.cancel
+            timer.cancel()
         #must do the deletion of timer manually    
         del(self.monitored_data[IPStr].timer)
-        self.monitored_data[IPStr].timer = Timer(TIMEOUT, self.handle_timeout, (IP, IPStr))
+        self.monitored_data[IPStr].timer = Timer(self.TIMEOUT, self.handle_timeout, args = [IPStr])
         
         #retrieve buffer for this particular connection and direction
         if reverse:
@@ -230,23 +204,62 @@ class Firewall (object):
             self.monitored_data[IPStr].outBuff = snippet
     else:
         log.debug("WARNING: Tried to monitor connection that isn't in internal set")
-
-  def handle_timeout(self, tup):
+        
+  def handle_timeout(self, IPStr):
     #output count data
     #remove connection from monitoring
     log.debug("Connection timeout: " + IPStr)
-    ip, IPStr = tup
+    self.countsFile = open('/root/pox/ext/counts.csv', 'a')
     self.monitored_connections.remove(IPStr)
-    for string in self.monitor_strings[ip]:
-        IPStr = IPStr.split(",")
-        self.countsFile.write(IPStr[0] + ',' + IPStr[1] + ',' + string + ',' + str(self.counts[IPStr+string]))
+    split = IPStr.split(",")
+    for string in self.monitor_strings[split[0]]:
+        self.countsFile.write(split[0] + ',' + split[1] + ',' + string + ',' + str(self.counts[IPStr+ ',' + string]) + '\n')
         del(self.counts[IPStr + ',' + string])
+    self.countsFile.close()
     del(self.monitored_data[IPStr].timer)
     del(self.monitored_data[IPStr])
+    
+  def mark_monitored(self, event, flow):
+    # Mark to monitor data
+    monitoredIPs = self.monitor_strings.keys()
+    #log.debug("Flow source: " + flow.src.toStr() + " Flow dest: " + flow.dst.toStr())
+    if flow.src.toStr() in monitoredIPs or flow.dst.toStr() in monitoredIPs:
+        if flow.src.toStr() in monitoredIPs :
+            IPStr = flow.src.toStr() + ',' + str(flow.srcport) + ',' + flow.dst.toStr() + ',' + str(flow.dstport)
+            monitoredIP = flow.src.toStr()
+        elif flow.dst.toStr() in monitoredIPs:
+            IPStr = flow.dst.toStr() + ',' + str(flow.dstport) + ',' + flow.src.toStr() + ',' + str(flow.srcport)
+            monitoredIP = flow.dst.toStr()
+        
+        log.debug("Monitoring connection: " + IPStr)
+        #Same conneciton already exists!
+        if IPStr in self.monitored_connections:
+            log.debug("Old connection still exists.  Writing counts to file.")
+            #output counts to countsFile
+            IPStr = IPStr.split(",")
+            self.countsFile.open('/root/pox/ext/counts.csv', 'a')
+            for string in self.monitor_strings[monitoredIP]:
+                #TODO: get rid of old connection somehow??
+                self.countsFile.write(IPStr[0] + ',' + IPStr[1] + ',' +string + ',' + str(self.counts[IPStr + "," + string]) + "\n")
+            self.countsFile.close()
+        else:
+            self.monitored_connections.add(IPStr)
+        #new tuple to hold data snippets and timer
+        data = monitor_tuple(IPStr)
+        data.timer = Timer(self.TIMEOUT, self.handle_timeout, args = [IPStr])
+        self.monitored_data[IPStr] = data
+        
+        #set up blank counts for each string
+        for string in self.monitor_strings[monitoredIP]:
+            self.counts[IPStr + ',' + string] = 0
+        
+        #monitor this connection in both directions
+        event.action.monitor_forward = True
+        event.action.monitor_backward = True
         
 class monitor_tuple:
-    def __init__(self, IP, IPStr):
+    def __init__(self, IPStr):
         self.inBuff = ""
         self.outBuff = ""
-        self.timer = Timer(TIMEOUT, self.handle_timeout, (IP, IPStr))
+        self.timer = None
         
