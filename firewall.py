@@ -73,7 +73,7 @@ class Firewall (object):
     # Use open('/root/pox/ext/counts.csv', 'a') for APPENDING.  
     self.countsFile = open('/root/pox/ext/counts.csv', 'w')
     self.countsFile.flush()
-    self.countsFile.close()
+    #self.countsFile.close()
     log.debug("Firewall initialized.")
 
   def _handle_ConnectionIn (self, event, flow, packet):
@@ -209,13 +209,13 @@ class Firewall (object):
     #output count data
     #remove connection from monitoring
     log.debug("Connection timeout: " + IPStr)
-    self.countsFile = open('/root/pox/ext/counts.csv', 'a')
+    #self.countsFile = open('/root/pox/ext/counts.csv', 'a')
     self.monitored_connections.remove(IPStr)
     split = IPStr.split(",")
     for string in self.monitor_strings[split[0]]:
         self.countsFile.write(split[0] + ',' + split[1] + ',' + string + ',' + str(self.counts[IPStr+ ',' + string]) + '\n')
         del(self.counts[IPStr + ',' + string])
-    self.countsFile.close()
+    #self.countsFile.close()
     del(self.monitored_data[IPStr].timer)
     del(self.monitored_data[IPStr])
     
@@ -237,11 +237,11 @@ class Firewall (object):
             log.debug("Old connection still exists.  Writing counts to file.")
             #output counts to countsFile
             IPStr = IPStr.split(",")
-            self.countsFile.open('/root/pox/ext/counts.csv', 'a')
+            #self.countsFile.open('/root/pox/ext/counts.csv', 'a')
             for string in self.monitor_strings[monitoredIP]:
                 #TODO: get rid of old connection somehow??
                 self.countsFile.write(IPStr[0] + ',' + IPStr[1] + ',' +string + ',' + str(self.counts[IPStr + "," + string]) + "\n")
-            self.countsFile.close()
+            #self.countsFile.close()
         else:
             self.monitored_connections.add(IPStr)
         #new tuple to hold data snippets and timer
